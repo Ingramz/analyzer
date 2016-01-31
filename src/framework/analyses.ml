@@ -480,12 +480,14 @@ sig
 
   val startstate: varinfo -> D.t
 
-  val body: fundec -> D.t -> D.t
-  val assign : lval -> exp -> D.t -> D.t  
-  val enter : lval option -> exp -> exp list -> D.t -> D.t  
+  val body: fundec -> D.t -> D.t (* entry *)
+  val assign : lval -> exp -> D.t -> D.t (* assign *)
+  val enter : lval option -> exp -> exp list -> D.t -> D.t
+  (* TODO: lisa combine *)
+  (* TODO: Lisa kõigi edge tüüpide jaoks üks fn *)
 end
-
-module UnitBackwardSpec : BackwardSpec = 
+(*
+module UnitBackwardSpec : BackwardSpec =
 struct
   module D = Lattice.Unit
   module G = Lattice.Unit
@@ -497,6 +499,55 @@ struct
   let body f st = st
   let assign lv rv st = st
   let enter lvo fn args st = st
+end*)
+
+module UnitBackwardSpec : BackwardSpec =
+struct
+  (* include Analyses.DefaultSpec *)
+
+  let name = "unit"
+
+  module ID = IntDomain.Integers
+  module ISD = SetDomain.ToppedSet (ID) (struct let topname = "bla" end)
+
+  module D = ISD
+  module G = Lattice.Unit
+
+  class constVisitorClass (ctx : ISD.t ref) = object(self)
+    inherit nopCilVisitor
+
+    method vexpr (e:exp) =
+      (* ignore (printf "%a\n" d_exp e); *)
+      (match e with
+      | Const (CInt64 (i, _, _)) ->
+        ctx := ISD.add (ID.of_int (i)) (!ctx)
+      | _ ->
+        ());
+      DoChildren
+  end
+
+  (* transfer functions *)
+  let assign (lval:lval) (rval:exp) (c:D.t) : D.t =
+    let ct = ref c in
+      ignore (visitCilLval (new constVisitorClass ct) lval);
+      ignore (visitCilExpr (new constVisitorClass ct) rval);
+      !ct
+
+  let body (f:fundec) (c:D.t) : D.t =
+    let ct = ref c in
+(*      ignore (visitCilFunction (new constVisitorClass ct) f);
+*)
+      !ct
+
+  let enter (lval:lval option) (f:exp) (args:exp list) (c:D.t) : D.t =
+    (* ignore (printf "%a\n" D.pretty c); *)
+    let ct = ref c in
+      (match lval with | Some l -> ignore (visitCilLval (new constVisitorClass ct) l) | _ -> ());
+      ignore (visitCilExpr (new constVisitorClass ct) f);
+      List.iter (fun e -> ignore (visitCilExpr (new constVisitorClass ct) e)) args;
+      !ct
+
+  let startstate v = D.top ()
 end
 
 (** A side-effecting system. *)
@@ -645,7 +696,7 @@ struct
   let val_of x = x
   (* Assume that context is same as local domain. *)
 
-  let part_access _ _ _ _ = 
+  let part_access _ _ _ _ =
     (Access.LSSSet.singleton (Access.LSSet.empty ()), Access.LSSet.empty ())
     (* No partitioning on accesses and not locks *)
 end

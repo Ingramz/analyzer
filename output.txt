@@ -1,0 +1,45 @@
+u = 'FunctionEntry main'
+edge = 'Entry main'
+v = 'Statement i = 5;'
+
+u = 'Statement i = 5;'
+edge = 'Assign 'i = 5' '
+v = 'Statement assert(i == 11);'
+
+u = 'Statement assert(i == 11);'
+edge = 'Proc 'assert(i == 11)''
+v = 'Statement return (0);'
+
+u = 'Statement return (0);'
+edge = 'Ret (Some 0, main)'
+v = 'Function main'
+
+u = 'Statement return (0);'
+edge = 'Ret (Some 0, main)'
+v = 'Function main'
+
+u = 'FunctionEntry main'
+edge = 'Entry main'
+v = 'Statement i = 5;'
+
+u = 'Statement assert(i == 11);'
+edge = 'Proc 'assert(i == 11)''
+v = 'Statement return (0);'
+
+u = 'Statement i = 5;'
+edge = 'Assign 'i = 5' '
+v = 'Statement assert(i == 11);'
+
+Mapping {
+  01-expressions.c:12(main) -> 
+    {}
+  01-expressions.c:7(main) -> 
+    {}
+  01-expressions.c:7(main) -> 
+    bla
+  01-expressions.c:14(main) -> 
+    {}
+  01-expressions.c:11(main) -> 
+    {}
+  OTHERS -> Not available
+}
