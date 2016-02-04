@@ -480,11 +480,21 @@ sig
 
   val startstate: varinfo -> D.t
 
-  val body: fundec -> D.t -> D.t (* entry *)
+  (* val body: fundec -> D.t -> D.t (* entry *)
   val assign : lval -> exp -> D.t -> D.t (* assign *)
-  val enter : lval option -> exp -> exp list -> D.t -> D.t
+  val enter : lval option -> exp -> exp list -> D.t -> D.t *)
   (* TODO: lisa combine *)
   (* TODO: Lisa kõigi edge tüüpide jaoks üks fn *)
+
+  val assign: lval -> exp -> D.t -> D.t
+  val branch: exp -> bool -> D.t -> D.t
+  val body  : fundec -> D.t -> D.t
+  val return: exp option  -> fundec -> D.t -> D.t
+
+
+  val enter   : lval option -> varinfo -> exp list -> D.t -> D.t
+  val combine : lval option -> exp -> varinfo -> exp list -> D.t -> D.t -> D.t
+  val special : lval option -> varinfo -> exp list -> D.t -> D.t
 end
 (*
 module UnitBackwardSpec : BackwardSpec =
@@ -513,38 +523,78 @@ struct
   module D = ISD
   module G = Lattice.Unit
 
-  class constVisitorClass (ctx : ISD.t ref) = object(self)
+  class constVisitorClass (ctx : D.t ref) = object(self)
     inherit nopCilVisitor
 
     method vexpr (e:exp) =
-      (* ignore (printf "%a\n" d_exp e); *)
+      ignore (printf "VEXPR: %a\n" d_exp e);
       (match e with
       | Const (CInt64 (i, _, _)) ->
+        ignore (printf "Found %Ld\n" i);
         ctx := ISD.add (ID.of_int (i)) (!ctx)
       | _ ->
         ());
       DoChildren
   end
 
+  (* let enter (lval: lval option) (f:varinfo) (args:exp list) (ctx:D.t) : D.t = ctx
+  let combine (lval:lval option) fexp (f:varinfo) (args:exp list) (au:D.t) (ctx:D.t) : D.t = ctx
+  let special (lval: lval option) (f:varinfo) (arglist:exp list) ctx : D.t = ctx *)
+
   (* transfer functions *)
-  let assign (lval:lval) (rval:exp) (c:D.t) : D.t =
-    let ct = ref c in
+  let assign (lval:lval) (rval:exp) ctx : D.t =
+    ignore (print_string "tf_assign\n");
+    let ct = ref ctx in
       ignore (visitCilLval (new constVisitorClass ct) lval);
       ignore (visitCilExpr (new constVisitorClass ct) rval);
+      ignore (printf "AFTER=%a\n" D.pretty !ct);
       !ct
 
-  let body (f:fundec) (c:D.t) : D.t =
-    let ct = ref c in
-(*      ignore (visitCilFunction (new constVisitorClass ct) f);
-*)
+  let branch (exp:exp) (tv:bool) ctx : D.t =
+    ignore (print_string "tf_branch\n");
+    let ct = ref ctx in
+      ignore (visitCilExpr (new constVisitorClass ct) exp);
+      ignore (printf "AFTER=%a\n" D.pretty !ct);
       !ct
 
-  let enter (lval:lval option) (f:exp) (args:exp list) (c:D.t) : D.t =
-    (* ignore (printf "%a\n" D.pretty c); *)
-    let ct = ref c in
+  let body (f:fundec) ctx : D.t =
+    ignore (print_string "tf_body\n");
+    let ct = ref ctx in
+     ignore (visitCilFunction (new constVisitorClass ct) f);
+     ignore (printf "AFTER=%a\n" D.pretty !ct);
+     !ct
+
+  let return (exp:exp option) (f:fundec) ctx : D.t =
+    ignore (print_string "tf_return\n");
+    match exp with
+    | Some e ->
+      let ct = ref ctx in
+        ignore (visitCilExpr (new constVisitorClass ct) e);
+        ignore (printf "AFTER=%a\n" D.pretty !ct);
+        !ct
+    | _ ->
+      ctx
+
+  let enter (lval: lval option) (f:varinfo) (args:exp list) ctx : D.t =
+    let ct = ref ctx in
       (match lval with | Some l -> ignore (visitCilLval (new constVisitorClass ct) l) | _ -> ());
-      ignore (visitCilExpr (new constVisitorClass ct) f);
+      ignore (visitCilVarDecl (new constVisitorClass ct) f);
       List.iter (fun e -> ignore (visitCilExpr (new constVisitorClass ct) e)) args;
+      !ct
+
+  let combine (lval:lval option) fexp (f:varinfo) (args:exp list) (au:D.t) ctx : D.t =
+    let ct = ref (D.join au ctx) in
+      (match lval with | Some l -> ignore (visitCilLval (new constVisitorClass ct) l) | _ -> ());
+      ignore (visitCilExpr (new constVisitorClass ct) fexp);
+      ignore (visitCilVarDecl (new constVisitorClass ct) f);
+      List.iter (fun e -> ignore (visitCilExpr (new constVisitorClass ct) e)) args;
+      !ct
+
+  let special (lval: lval option) (f:varinfo) (arglist:exp list) ctx : D.t =
+    let ct = ref ctx in
+      (match lval with | Some l -> ignore (visitCilLval (new constVisitorClass ct) l) | _ -> ());
+      ignore (visitCilVarDecl (new constVisitorClass ct) f);
+      List.iter (fun e -> ignore (visitCilExpr (new constVisitorClass ct) e)) arglist;
       !ct
 
   let startstate v = D.top ()

@@ -271,17 +271,67 @@ struct
 
   *)
 
-  (*  edged foldida *)
-  let tf (u:lv) ((e:(Cil.location * MyCFG.edge) list),(v:MyCFG.node)) get set gget gset =
-    ignore (printf "u = '%a'\n" MyCFG.pretty_node u);
-    let f (loc, elem) = ignore (printf "edge = '%a'\n" MyCFG.pretty_edge elem); in
-    List.iter f e;
-    ignore (printf "v = '%a'\n\n" MyCFG.pretty_node v);
-    get v
-    (* get v *)
-    (* *)
+  let tf_assign lv rv u e v d get set =
+    S.assign lv rv d
 
-  let system v = List.map (tf v) (Cfg.next v)
+  let tf_entry fd u e v d get set =
+    S.body fd d
+
+  let tf_test ex tv u e v d get set =
+    S.branch ex tv d
+
+  let tf_ret ret fd u e v d get set =
+    S.return ret fd d
+(*
+  let tf_proc lv e args u edge v d get set =
+    match e with
+      | Lval (Var e, NoOffset) ->
+      | _ -> ignore (M.warn "############"); d
+    ignore (
+      );
+    (* let combine (cd, fd) = S.combine cd lv e args fd in
+    let paths = S.enter d lv f args in
+    let _     = if not (get_bool "exp.full-context") then List.iter (fun (c,v) -> sidel (FunctionEntry f, S.context v) v) paths in
+    let paths = List.map (fun (c,v) -> (c, getl (Function f, S.context v))) paths in
+    let paths = List.filter (fun (c,v) -> D.is_bot v = false) paths in
+    let paths = List.map combine paths in
+    List.fold_left D.join (D.bot ()) paths *)
+    d *)
+
+  let tf_normal_call ctx lv e (f:varinfo) args (u:lv) (edge:MyCFG.edge) (v:lv) get set : ld =
+      let _ = set (Function f) (S.enter lv f args ctx) in
+      S.combine lv e f args (get (FunctionEntry f)) ctx
+
+  let tf_special_call ctx lv f args = S.special lv f args ctx
+
+  let tf_proc lv e args u edge v d get set =
+    match e with
+      | Lval (Var f, NoOffset) -> let has_dec = try ignore (Cilfacade.getdec f); true with Not_found -> false in
+                                  if has_dec && not (LibraryFunctions.use_special f.vname)
+                                  then tf_normal_call d lv e f args u edge v get set
+                                  else tf_special_call d lv f args
+      | _ -> ignore (M.warn "############"); d
+
+  let tf (u:lv) (e:MyCFG.edge) (v:lv) (d:ld) get set =
+    ignore (printf "-----------------\nEXPR: %a\n" MyCFG.pretty_edge e);
+    ignore (printf "u: %a\n" MyCFG.pretty_node u);
+    ignore (printf "v: %a\n" MyCFG.pretty_node v);
+    ignore (printf "%s" "TF_");
+    begin match e with
+      | Assign (lv,rv) -> ignore (printf "%s\n" "Assign"); ignore (printf "d_before %a\n" D.pretty d); tf_assign lv rv
+      | Entry f        -> ignore (printf "%s\n" "Entry"); ignore (printf "d_before %a\n" D.pretty d); tf_entry f
+      | Ret (r,fd)     -> ignore (printf "%s\n" "Ret"); ignore (printf "d_before %a\n" D.pretty d); tf_ret r fd
+      | Test (p,b)     -> ignore (printf "%s\n" "Test"); ignore (printf "d_before %a\n" D.pretty d); tf_test p b
+      | Proc (r,f,ars) -> ignore (printf "%s\n" "Proc"); ignore (printf "d_before %a\n" D.pretty d); tf_proc r f ars
+      | ASM _          -> ignore (printf "%s\n" "ASM"); ignore (printf "d_before %a\n" D.pretty d); fun _ _ _ d _ _ -> ignore (M.warn "ASM statement ignored."); d
+      | Skip           -> ignore (printf "%s\n" "Skip"); ignore (printf "d_before %a\n" D.pretty d); fun _ _ _ d _ _ -> d
+      | SelfLoop       -> ignore (printf "%s\n" "SelfLoop"); ignore (printf "d_before %a\n" D.pretty d); fun _ _ _ d _ _ -> d
+    end u e v d get set
+
+  let tf (u:lv) ((e:(Cil.location * MyCFG.edge) list), (v:lv)) get set gget gset =
+    List.fold_left (fun d (_, ed) -> tf u ed v d get set) (get v) e
+
+  let system v = ignore (print_string "\n!!!!!!ANA!!!!!!!\n"); List.map (tf v) (Cfg.next v)
 end
 
 (** The main point of this file---generating a [GlobConstrSys] from a [Spec]. *)
