@@ -3,6 +3,22 @@ open Cil
 open Pretty
 open GobConfig
 
+(* Some helper functions to avoid flagging race warnings on atomic types, and
+ * other irrelevant stuff, such as mutexes and functions. *)
+
+let is_ignorable_type (t: typ): bool =
+  match t with
+  | TNamed (info, attr) -> info.tname = "atomic_t" || info.tname = "pthread_mutex_t" || info.tname = "spinlock_t"
+  | TComp (info, attr) -> info.cname = "lock_class_key"
+  | TInt (IInt, attr) -> hasAttribute "mutex" attr
+  | _ -> false
+
+let is_ignorable = function
+  | None -> false
+  | Some (v,os) ->
+      try isFunctionType v.vtype || is_ignorable_type v.vtype
+      with Not_found -> false
+
 module Ident : Printable.S with type t = string = 
 struct
   open Pretty
@@ -186,21 +202,23 @@ let add_one (e:exp) (w:bool) (ty:acc_typ) lv ((pp,lp):part): unit =
     | None -> None 
     | Some (v,os) -> Some (v, remove_idx os)
   in
-  some_accesses := true;
-  let tyh = Ht.find_def accs  ty (lazy (Ht.create 10)) in
-  let lvh = Ht.find_def tyh lv (lazy (Ht.create 10)) in
-  let loc = !Tracing.current_loc in
-  let add_part ls =
-    Ht.modify_def lvh (Some(ls)) (lazy (Set.empty,lp)) (fun (s,o_lp) ->
-        (Set.add (w,loc,e,lp) s, LSSet.inter lp o_lp)
-      )
-  in
-  if LSSSet.is_empty pp then
-    Ht.modify_def lvh None (lazy (Set.empty,lp)) (fun (s,o_lp) ->
-        (Set.add (w,loc,e,lp) s, LSSet.inter lp o_lp)
-      )
-  else
-    LSSSet.iter add_part pp
+  if is_ignorable lv then () else begin
+    some_accesses := true;
+    let tyh = Ht.find_def accs  ty (lazy (Ht.create 10)) in
+    let lvh = Ht.find_def tyh lv (lazy (Ht.create 10)) in
+    let loc = !Tracing.current_loc in
+    let add_part ls =
+      Ht.modify_def lvh (Some(ls)) (lazy (Set.empty,lp)) (fun (s,o_lp) ->
+          (Set.add (w,loc,e,lp) s, LSSet.inter lp o_lp)
+        )
+    in
+    if LSSSet.is_empty pp then
+      Ht.modify_def lvh None (lazy (Set.empty,lp)) (fun (s,o_lp) ->
+          (Set.add (w,loc,e,lp) s, LSSet.inter lp o_lp)
+        )
+    else
+      LSSSet.iter add_part pp
+  end
 
 let type_from_type_offset : acc_typ -> typ = function
   | `Type t -> t
@@ -256,8 +274,7 @@ let rec add_propagate e w ty ls p =
     List.iter (just_vars t) vars
 
 let rec distribute_access_lval f w r lv =
-  if not !Goblintutil.may_narrow then
-    f w r (mkAddrOf lv);
+  f w r (mkAddrOf lv);
   distribute_access_lval_addr f w r lv
 
 and distribute_access_lval_addr f w r lv =
@@ -306,15 +323,17 @@ and distribute_access_exp f w r = function
   | _ -> ()
 
   let add e w vo oo p =
-    let ty = get_val_type e vo oo in
-    (* ignore (printf "add %a\n" d_exp e); *)
-    match vo, oo with
-    | Some v, Some o -> add_one e w ty (Some (v, o)) p
-    | _ -> 
-      if !unsound && isArithmeticType (type_from_type_offset ty) then
-        add_one e w ty None p
-      else
-        add_propagate e w ty None p
+    if not !Goblintutil.may_narrow then begin
+      let ty = get_val_type e vo oo in
+      (* ignore (printf "add %a\n" d_exp e); *)
+      match vo, oo with
+      | Some v, Some o -> add_one e w ty (Some (v, o)) p
+      | _ -> 
+        if !unsound && isArithmeticType (type_from_type_offset ty) then
+          add_one e w ty None p
+        else
+          add_propagate e w ty None p
+    end
 
 let partition_race ps (accs,ls) =
   let write (w,loc,e,lp) = w in

@@ -3,6 +3,10 @@
 require 'find'
 require 'fileutils'
 
+def puts(o) # puts is not atomic and messes up linebreaks with multiple threads
+  print(o+"\n")
+end
+
 goblint = File.join(Dir.getwd,"goblint")
 goblintbyte = File.join(Dir.getwd,"goblint.byte")
 if File.exists?(goblintbyte) then
@@ -171,7 +175,7 @@ doproject = lambda do |p|
   `#{goblint} #{filename} --set justcil true #{p.params} >#{cilfile} 2> /dev/null`
   p.size = `wc -l #{cilfile}`.split[0]
   starttime = Time.now
-  cmd = "#{goblint} #{filename} #{p.params} 1>#{warnfile} --set printstats true  2>#{statsfile}"
+  cmd = "#{goblint} #{filename} #{p.params} #{ENV['gobopt']} 1>#{warnfile} --set printstats true  2>#{statsfile}"
   system(cmd)
   endtime   = Time.now
   #status = $?.exitstatus
