@@ -2,9 +2,25 @@
 
 require 'find'
 require 'fileutils'
+require 'timeout'
+timeout = 5 # seconds
 
 def puts(o) # puts is not atomic and messes up linebreaks with multiple threads
   print(o+"\n")
+end
+# colors
+class String
+  def colorize(color_code); "\e[#{color_code}m#{self}\e[0m" end
+  def red; colorize(31) end
+  def green; colorize(32) end
+  def yellow; colorize(33) end
+  def blue; colorize(34) end
+  def pink; colorize(35) end
+  def light_blue; colorize(36) end
+end
+# clear the current line
+def clearline
+  print "\r\e[K"
 end
 
 goblint = File.join(Dir.getwd,"goblint")
@@ -22,6 +38,7 @@ testfiles   = File.expand_path("tests/regression")
 
 alliswell = true
 failed    = [] # failed tests
+timedout  = [] # timed out tests
 
 class Project
   attr_reader :name, :group, :path, :params, :warnings
@@ -53,6 +70,7 @@ end
 # -v at the end stands for verbose output
 verbose = ARGV.last == "-v" && ARGV.pop
 parallel = ARGV.last == "-p" && ARGV.pop
+report = ARGV.last == "-r" && ARGV.pop
 only = ARGV[0] unless ARGV[0].nil?
 if only == "future" then
   future = true
@@ -136,49 +154,70 @@ regs.sort.each do |d|
   end
 end
 
-cmds = {"code2html" => lambda {|f,o| "code2html -l c -n #{f} 2> /dev/null 1> #{o}"},
-        "source-highlight" => lambda {|f,o| "source-highlight -n -i #{f} -o #{o}"},
-        "pygmentize" => lambda {|f,o| "pygmentize -O full,linenos=1 -o #{o} #{f}"}
-       }
-highlighter = nil
-cmds.each do |name, cmd|
-  # if `which #{cmd} 2> /dev/null`.empty? then
-  if ENV['PATH'].split(':').map {|f| File.executable? "#{f}/#{name}"}.include?(true) then
-    highlighter = cmd
-    break
+highlighter = lambda {|f,o| "cp #{f} #{o}"}
+if report then
+  cmds = {"code2html" => lambda {|f,o| "code2html -l c -n #{f} 2> /dev/null 1> #{o}"},
+          "source-highlight" => lambda {|f,o| "source-highlight -n -i #{f} -o #{o}"},
+          "pygmentize" => lambda {|f,o| "pygmentize -O full,linenos=1 -o #{o} #{f}"}
+         }
+  cmds.each do |name, cmd|
+    # if `which #{cmd} 2> /dev/null`.empty? then
+    if ENV['PATH'].split(':').map {|f| File.executable? "#{f}/#{name}"}.include?(true) then
+      highlighter = cmd
+      break
+    end
   end
-end
-if highlighter.nil? then
-  puts "Warning: No syntax highlighter installed (code2html, source-highlight, pygmentize)."
-  highlighter = lambda {|f,o| "cp #{f} #{o}"} 
+  if highlighter.nil? then
+    puts "Warning: No syntax highlighter installed (code2html, source-highlight, pygmentize)."
+  end
 end
 
 #analysing the files
 startdir = Dir.pwd
-strs = ["Analysing","Testing","Goblinting"]
-astr = strs[rand(strs.size)]
 doproject = lambda do |p|
   Dir.chdir(startdir)
   filepath = p.path
   dirname = File.dirname(filepath)
   filename = File.basename(filepath)
   Dir.chdir(dirname)
-  puts "#{astr} #{p.group}/#{p.name}"
+  clearline
+  print "Testing #{p.group}/#{p.name}"
   warnfile = File.join(testresults, p.name + ".warn.txt")
   statsfile = File.join(testresults, p.name + ".stats.txt")
 #   confile = File.join(testresults, p.name + ".con.txt")
 #   solfile = File.join(testresults, p.name + ".sol.txt")
   cilfile = File.join(testresults, p.name + ".cil.txt")
   orgfile = File.join(testresults, p.name + ".c.html")
-  # `code2html -l c -n #{filename} > #{orgfile}`
-  system(highlighter.call(filename, orgfile))
-  `#{goblint} #{filename} --set justcil true #{p.params} >#{cilfile} 2> /dev/null`
-  p.size = `wc -l #{cilfile}`.split[0]
+  if report then
+    system(highlighter.call(filename, orgfile))
+    `#{goblint} #{filename} --set justcil true #{p.params} >#{cilfile} 2> /dev/null`
+    p.size = `wc -l #{cilfile}`.split[0]
+  end
   starttime = Time.now
   cmd = "#{goblint} #{filename} #{p.params} #{ENV['gobopt']} 1>#{warnfile} --set printstats true  2>#{statsfile}"
-  system(cmd)
+  pid = Process.spawn(cmd)
+  begin
+    Timeout::timeout(timeout) {Process.wait pid}
+  rescue Timeout::Error
+    puts "\t Timeout reached!".red + " Killing process #{pid}..."
+    timedout.push "#{p.group}/#{p.name}"
+    Process.kill('TERM', pid)
+    return
+  end
   endtime   = Time.now
-  #status = $?.exitstatus
+  status = $?.exitstatus
+  if status != 0 then
+    reason = if status == 2 then "exception" elsif status == 3 then "verify" end
+    puts "\t Status: #{status} (#{reason})".red
+    stats = File.readlines statsfile
+    if stats[0] =~ /exception/ then
+      puts stats[0..9].join()
+    end
+    if status == 3 then
+      warn = File.readlines warnfile
+      puts (warn.select { |x| x["Unsatisfied constraint"] || x["Fixpoint not reached"] }).uniq.join()
+    end
+  end
 #   `#{goblint} #{filename} #{p.params} --trace con 2>#{confile}` if tracing
 #   `#{goblint} #{filename} #{p.params} --trace sol 2>#{solfile}` if tracing
   File.open(statsfile, "a") do |f|
@@ -201,6 +240,8 @@ if parallel then
 else
   projects.each &doproject
 end
+clearline
+`pkill goblint` # FIXME somehow the killing above is not complete...
 
 #Outputting
 header = <<END
@@ -319,8 +360,10 @@ File.open(theresultfile, "w") do |f|
       f.puts "<td style =\"color: green\">NONE</td>"
     else
       alliswell = false
-      failed.push p.name
-      puts "#{p.group}/#{p.name} \e[31mfailed! \u2620\e[0m"
+      if not timedout.include? "#{p.group}/#{p.name}" then
+        failed.push p.name
+        puts "#{p.group}/#{p.name} \e[31mfailed! \u2620\e[0m"
+      end
       if not is_ok or ferr.nil? then
         f.puts "<td style =\"color: red\">FAILED</td>"
       else
@@ -340,18 +383,20 @@ File.open(theresultfile, "w") do |f|
   f.puts "</html>"
 end
 
-puts "Usage examples for high-tech script parameters: "
-puts "  Single: ./scripts/update_suite.rb simple_rc"
-puts "  Groups: ./scripts/update_suite.rb group mutex"
-puts "  Exclude group: ./scripts/update_suite.rb group -mutex"
-puts "  Future: ./scripts/update_suite.rb future"
-puts "  Parallel execution: append -p"
-puts "  Verbose output: append -v"
-puts ("Results: " + theresultfile)
+if report then
+  puts "Usage examples for high-tech script parameters: "
+  puts "  Single: ./scripts/update_suite.rb simple_rc"
+  puts "  Groups: ./scripts/update_suite.rb group mutex"
+  puts "  Exclude group: ./scripts/update_suite.rb group -mutex"
+  puts "  Future: ./scripts/update_suite.rb future"
+  puts "  Parallel execution: append -p"
+  puts "  Verbose output: append -v"
+  puts ("Results: " + theresultfile)
+end
 if alliswell then
-  puts "\e[32mAll is well!\e[0m"
+  puts "All is well!".green
 else
-  puts "\e[31mAll is not well!\e[0m"
+  puts "All is not well!".red
   # puts "failed tests: #{failed}"
 end
 exit alliswell
